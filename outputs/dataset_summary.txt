@@ -1,0 +1,5 @@
+Number of Patients: 51
+Number of Genes: 28278
+Number of Features (after cleaning): 28278
+Number of Responders: 25
+Number of Non-Responders: 26
