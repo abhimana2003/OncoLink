@@ -1,14 +1,10 @@
-from __future__ import annotations
-
-import os
-from typing import List
-
-import joblib
-import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
-from sklearn.decomposition import PCA
+import numpy as np
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+import os
+import joblib
 
 
 DATA_PATH = "data/METABRIC_RNA_Mutation.csv"
@@ -16,271 +12,224 @@ OUTPUT_DIR = "outputs_metabric"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+
+def clean_column_names(df):
     df.columns = (
         df.columns.str.strip()
         .str.lower()
-        .str.replace(" ", "_", regex=False)
-        .str.replace("+", "plus", regex=False)
-        .str.replace("-", "_", regex=False)
+        .str.replace(" ", "_")
+        .str.replace("+", "plus")
+        .str.replace("-", "_")
     )
     return df
 
 
-def map_binary_column(series: pd.Series, positive_tokens: List[str], negative_tokens: List[str]) -> pd.Series:
-    def _map_value(x):
+def map_binary(series, pos_vals, neg_vals):
+    def convert(x):
         if pd.isna(x):
             return np.nan
-        s = str(x).strip().lower()
-        if s in positive_tokens:
+        x = str(x).lower().strip()
+        if x in pos_vals:
             return 1
-        if s in negative_tokens:
+        if x in neg_vals:
             return 0
         return np.nan
 
-    return series.map(_map_value)
+    return series.map(convert)
 
 
-def main() -> None:
-    print("Loading METABRIC dataset...")
-    df = pd.read_csv(DATA_PATH)
-    df = clean_column_names(df)
 
-    print("Raw shape:", df.shape)
+print("\n DATA INSPECTION ")
 
-    # ----------------------------
-    # Define target
-    # ----------------------------
-    # Best simple binary target for this dataset
-    target_col = "overall_survival"
+df = pd.read_csv(DATA_PATH)
+df = clean_column_names(df)
 
-    if target_col not in df.columns:
-        raise ValueError(f"Target column '{target_col}' not found.")
+print("Raw Shape:", df.shape)
+print(df.head())
 
-    df[target_col] = pd.to_numeric(df[target_col], errors="coerce")
-    df = df.dropna(subset=[target_col])
-    df[target_col] = df[target_col].astype(int)
+target_col = "overall_survival"
 
-    # ----------------------------
-    # Define clinical columns
-    # ----------------------------
-    clinical_candidates = [
-        "age_at_diagnosis",
-        "chemotherapy",
-        "hormone_therapy",
-        "radio_therapy",
-        "tumor_size",
-        "tumor_stage",
-        "lymph_nodes_examined_positive",
-        "er_status",
-        "her2_status",
-        "pr_status",
-        "neoplasm_histologic_grade",
-    ]
+df[target_col] = pd.to_numeric(df[target_col], errors="coerce")
+df = df.dropna(subset=[target_col])
+df[target_col] = df[target_col].astype(int)
 
-    clinical_cols = [c for c in clinical_candidates if c in df.columns]
+print("\nClass Distribution:")
+print(df[target_col].value_counts())
 
-    # Map likely binary/string clinical columns
-    for col in ["chemotherapy", "hormone_therapy", "radio_therapy"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    for col in ["er_status", "her2_status", "pr_status"]:
-        if col in df.columns:
-            df[col] = map_binary_column(
-                df[col],
-                positive_tokens=["positive", "pos", "1"],
-                negative_tokens=["negative", "neg", "0"],
-            )
+print("\n CLINICAL FEATURE PROCESSING ")
 
-    # numeric clinical columns
-    for col in clinical_cols:
+clinical_candidates = [
+    "age_at_diagnosis",
+    "chemotherapy",
+    "hormone_therapy",
+    "radio_therapy",
+    "tumor_size",
+    "tumor_stage",
+    "lymph_nodes_examined_positive",
+    "er_status",
+    "her2_status",
+    "pr_status",
+    "neoplasm_histologic_grade",
+]
+
+clinical_cols = [c for c in clinical_candidates if c in df.columns]
+
+# Convert binary clinical features
+for col in ["chemotherapy", "hormone_therapy", "radio_therapy"]:
+    if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # ----------------------------
-    # Define gene-expression columns
-    # ----------------------------
-    # Exclude metadata, target, and mutation columns
-    metadata_exclude = {
-        "patient_id",
-        "type_of_breast_surgery",
-        "cancer_type",
-        "cancer_type_detailed",
-        "cellularity",
-        "pam50_plus_claudin_low_subtype",
-        "pam50__claudin_low_subtype",
-        "cohort",
-        "er_status_measured_by_ihc",
-        "her2_status_measured_by_snp6",
-        "tumor_other_histologic_subtype",
-        "inferred_menopausal_state",
-        "integrative_cluster",
-        "primary_tumor_laterality",
-        "oncotree_code",
-        "death_from_cancer",
-        "3_gene_classifier_subtype",
-        "3_gene_classifier_subtype".replace("3", "3"),  # harmless
-        "overall_survival_months",
-        target_col,
-    }
+for col in ["er_status", "her2_status", "pr_status"]:
+    if col in df.columns:
+        df[col] = map_binary(df[col],
+            ["positive", "pos", "1"],
+            ["negative", "neg", "0"]
+        )
 
-    mutation_cols = [c for c in df.columns if c.endswith("_mut")]
+# Ensure numeric
+for col in clinical_cols:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    gene_cols = [
-        c for c in df.columns
-        if c not in metadata_exclude
-        and c not in clinical_cols
-        and c not in mutation_cols
-    ]
+print("Clinical Features Used:", clinical_cols)
 
-    # force numeric for genes
-    for col in gene_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+print("\n GENE FEATURE PROCESSING ")
 
-    # ----------------------------
-    # Handle missing values
-    # ----------------------------
-    # Keep columns with at least 80% non-missing
-    keep_threshold = int(0.8 * len(df))
-    keep_cols = [c for c in clinical_cols + gene_cols + [target_col] if df[c].notna().sum() >= keep_threshold]
-    df = df[keep_cols]
+metadata_exclude = {
+    "patient_id", "cancer_type", "overall_survival_months",
+    "type_of_breast_surgery", "cohort", target_col
+}
 
-    clinical_cols = [c for c in clinical_cols if c in df.columns]
-    gene_cols = [c for c in gene_cols if c in df.columns]
+mutation_cols = [c for c in df.columns if c.endswith("_mut")]
 
-    # Fill missing clinical/gene values with column means
-    for col in clinical_cols:
-        df[col] = df[col].fillna(df[col].mean())
+gene_cols = [
+    c for c in df.columns
+    if c not in metadata_exclude
+    and c not in clinical_cols
+    and c not in mutation_cols
+]
 
-    for col in gene_cols:
-        df[col] = df[col].fillna(df[col].mean())
+# Force numeric
+for col in gene_cols:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Drop duplicate rows if any
-    df = df.drop_duplicates()
+print("Number of Gene Features:", len(gene_cols))
 
-    # ----------------------------
-    # Build feature matrices
-    # ----------------------------
-    X_genes = df[gene_cols]
-    X_clinical = df[clinical_cols]
-    X_all = pd.concat([X_genes, X_clinical], axis=1)
-    y = df[target_col]
+print("\n DATA CLEANING ")
 
-    print("\nFinal shapes:")
-    print("Genes:", X_genes.shape)
-    print("Clinical:", X_clinical.shape)
-    print("Combined:", X_all.shape)
-    print("Labels:", y.shape)
+threshold = int(0.8 * len(df))
 
-    print("\nClass balance:")
-    print(y.value_counts())
+keep_cols = [
+    c for c in clinical_cols + gene_cols + [target_col]
+    if df[c].notna().sum() >= threshold
+]
 
-    # ----------------------------
-    # Scale
-    # ----------------------------
-    scaler_genes = StandardScaler()
-    X_genes_scaled = scaler_genes.fit_transform(X_genes)
+df = df[keep_cols]
 
-    scaler_clinical = StandardScaler()
-    X_clinical_scaled = scaler_clinical.fit_transform(X_clinical)
+clinical_cols = [c for c in clinical_cols if c in df.columns]
+gene_cols = [c for c in gene_cols if c in df.columns]
 
-    X_all_scaled = np.concatenate([X_genes_scaled, X_clinical_scaled], axis=1)
+# Fill missing values
+df[clinical_cols] = df[clinical_cols].fillna(df[clinical_cols].mean())
+df[gene_cols] = df[gene_cols].fillna(df[gene_cols].mean())
 
-    # ----------------------------
-    # Top variable genes
-    # ----------------------------
-    num_top_genes = min(1000, X_genes.shape[1])
-    variances = np.var(X_genes_scaled, axis=0)
-    top_indices = np.argsort(variances)[-num_top_genes:]
-    X_top_genes = X_genes_scaled[:, top_indices]
+df = df.drop_duplicates()
 
-    # Keep combined top genes + clinical
-    X_top = np.concatenate([X_top_genes, X_clinical_scaled], axis=1)
-
-    # Also save clinical-only
-    X_clinical_only = X_clinical_scaled
-
-    # ----------------------------
-    # PCA on gene matrix
-    # ----------------------------
-    pca_20 = PCA(n_components=20, random_state=42)
-    pca_50 = PCA(n_components=50, random_state=42)
-    pca_var = PCA(n_components=0.95, random_state=42)
-
-    X_pca_20_genes = pca_20.fit_transform(X_genes_scaled)
-    X_pca_50_genes = pca_50.fit_transform(X_genes_scaled)
-    X_pca_var_genes = pca_var.fit_transform(X_genes_scaled)
-
-    # combined PCA-gene + clinical
-    X_pca_20 = np.concatenate([X_pca_20_genes, X_clinical_scaled], axis=1)
-    X_pca_50 = np.concatenate([X_pca_50_genes, X_clinical_scaled], axis=1)
-    X_pca_var = np.concatenate([X_pca_var_genes, X_clinical_scaled], axis=1)
-
-    print("\nExplained variance:")
-    print(f"PCA 20: {pca_20.explained_variance_ratio_.sum():.4f}")
-    print(f"PCA 50: {pca_50.explained_variance_ratio_.sum():.4f}")
-    print(f"PCA 95%% retained components: {pca_var.n_components_}")
-    print(f"PCA 95%% variance sum: {pca_var.explained_variance_ratio_.sum():.4f}")
-
-    # ----------------------------
-    # Save outputs
-    # ----------------------------
-    pd.DataFrame(X_all_scaled).to_csv(os.path.join(OUTPUT_DIR, "X_all_genes.csv"), index=False)
-    pd.DataFrame(X_top).to_csv(os.path.join(OUTPUT_DIR, "X_top_variable_genes.csv"), index=False)
-    pd.DataFrame(X_pca_20).to_csv(os.path.join(OUTPUT_DIR, "X_pca_20.csv"), index=False)
-    pd.DataFrame(X_pca_50).to_csv(os.path.join(OUTPUT_DIR, "X_pca_50.csv"), index=False)
-    pd.DataFrame(X_pca_var).to_csv(os.path.join(OUTPUT_DIR, "X_pca_95_var.csv"), index=False)
-    pd.DataFrame(X_clinical_only).to_csv(os.path.join(OUTPUT_DIR, "X_clinical.csv"), index=False)
-    y.to_csv(os.path.join(OUTPUT_DIR, "y_labels.csv"), index=False)
-
-    # Save transformers
-    joblib.dump(scaler_genes, os.path.join(OUTPUT_DIR, "scaler_genes.pkl"))
-    joblib.dump(scaler_clinical, os.path.join(OUTPUT_DIR, "scaler_clinical.pkl"))
-    joblib.dump(pca_20, os.path.join(OUTPUT_DIR, "pca_20.pkl"))
-    joblib.dump(pca_50, os.path.join(OUTPUT_DIR, "pca_50.pkl"))
-    joblib.dump(pca_var, os.path.join(OUTPUT_DIR, "pca_95_var.pkl"))
-
-    # ----------------------------
-    # Save summary + plots
-    # ----------------------------
-    summary = {
-        "Total Samples": int(len(y)),
-        "Number of Gene Features": int(X_genes.shape[1]),
-        "Number of Clinical Features": int(X_clinical.shape[1]),
-        "Number of Combined Features": int(X_all.shape[1]),
-        "Positive Class Count": int((y == 1).sum()),
-        "Negative Class Count": int((y == 0).sum()),
-    }
-
-    with open(os.path.join(OUTPUT_DIR, "dataset_summary.txt"), "w") as f:
-        for k, v in summary.items():
-            f.write(f"{k}: {v}\n")
-
-    plt.figure()
-    y.value_counts().sort_index().plot(kind="bar")
-    plt.title("Class Distribution: Overall Survival")
-    plt.xlabel("Label (0/1)")
-    plt.ylabel("Count")
-    plt.xticks(rotation=0)
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "class_distribution.png"))
-    plt.close()
-
-    plt.figure()
-    cumulative_variance = np.cumsum(pca_var.explained_variance_ratio_)
-    plt.plot(cumulative_variance, marker="o")
-    plt.title("Cumulative Explained Variance by PCA Components")
-    plt.xlabel("Number of Components")
-    plt.ylabel("Cumulative Explained Variance")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "pca_explained_variance.png"))
-    plt.close()
-
-    print("\nSaved processed files to:", OUTPUT_DIR)
-    print("Preprocessing complete.")
+print("Cleaned Shape:", df.shape)
 
 
-if __name__ == "__main__":
-    main()
+print("\n FEATURE MATRICES ")
+
+X_genes = df[gene_cols]
+X_clinical = df[clinical_cols]
+X_all = pd.concat([X_genes, X_clinical], axis=1)
+y = df[target_col]
+
+print("Genes:", X_genes.shape)
+print("Clinical:", X_clinical.shape)
+print("Combined:", X_all.shape)
+
+
+print("\n PREPROCESSING ")
+
+scaler_genes = StandardScaler()
+X_genes_scaled = scaler_genes.fit_transform(X_genes)
+
+scaler_clinical = StandardScaler()
+X_clinical_scaled = scaler_clinical.fit_transform(X_clinical)
+
+X_all_scaled = np.concatenate([X_genes_scaled, X_clinical_scaled], axis=1)
+
+
+print("\n FEATURE ENGINEERING ")
+
+# Top variable genes
+num_top = min(1000, X_genes.shape[1])
+variances = np.var(X_genes_scaled, axis=0)
+top_idx = np.argsort(variances)[-num_top:]
+
+X_top_genes = X_genes_scaled[:, top_idx]
+X_top = np.concatenate([X_top_genes, X_clinical_scaled], axis=1)
+
+# Clinical only
+X_clinical_only = X_clinical_scaled
+
+# PCA
+pca_20 = PCA(n_components=20, random_state=42)
+pca_50 = PCA(n_components=50, random_state=42)
+pca_var = PCA(n_components=0.95, random_state=42)
+
+X_pca_20 = np.concatenate([pca_20.fit_transform(X_genes_scaled), X_clinical_scaled], axis=1)
+X_pca_50 = np.concatenate([pca_50.fit_transform(X_genes_scaled), X_clinical_scaled], axis=1)
+X_pca_var = np.concatenate([pca_var.fit_transform(X_genes_scaled), X_clinical_scaled], axis=1)
+
+print("PCA 20 Variance:", pca_20.explained_variance_ratio_.sum())
+print("PCA 50 Variance:", pca_50.explained_variance_ratio_.sum())
+print("PCA 95% Components:", pca_var.n_components_)
+
+
+print("\n SAVING OUTPUTS ")
+
+pd.DataFrame(X_all_scaled).to_csv(f"{OUTPUT_DIR}/X_all_genes.csv", index=False)
+pd.DataFrame(X_top).to_csv(f"{OUTPUT_DIR}/X_top_variable_genes.csv", index=False)
+pd.DataFrame(X_pca_20).to_csv(f"{OUTPUT_DIR}/X_pca_20.csv", index=False)
+pd.DataFrame(X_pca_50).to_csv(f"{OUTPUT_DIR}/X_pca_50.csv", index=False)
+pd.DataFrame(X_pca_var).to_csv(f"{OUTPUT_DIR}/X_pca_95_var.csv", index=False)
+pd.DataFrame(X_clinical_only).to_csv(f"{OUTPUT_DIR}/X_clinical.csv", index=False)
+y.to_csv(f"{OUTPUT_DIR}/y_labels.csv", index=False)
+
+# Save models
+joblib.dump(scaler_genes, f"{OUTPUT_DIR}/scaler_genes.pkl")
+joblib.dump(scaler_clinical, f"{OUTPUT_DIR}/scaler_clinical.pkl")
+joblib.dump(pca_20, f"{OUTPUT_DIR}/pca_20.pkl")
+joblib.dump(pca_50, f"{OUTPUT_DIR}/pca_50.pkl")
+joblib.dump(pca_var, f"{OUTPUT_DIR}/pca_95_var.pkl")
+
+
+print("\n SUMMARY ")
+
+summary = {
+    "Samples": len(y),
+    "Gene Features": X_genes.shape[1],
+    "Clinical Features": X_clinical.shape[1],
+    "Total Features": X_all.shape[1],
+}
+
+for k, v in summary.items():
+    print(f"{k}: {v}")
+
+# Class distribution
+plt.figure()
+y.value_counts().plot(kind="bar")
+plt.title("Class Distribution")
+plt.savefig(f"{OUTPUT_DIR}/class_distribution.png")
+plt.close()
+
+# PCA variance
+plt.figure()
+plt.plot(np.cumsum(pca_var.explained_variance_ratio_))
+plt.title("PCA Explained Variance")
+plt.savefig(f"{OUTPUT_DIR}/pca_explained_variance.png")
+plt.close()
+
+print("\nProcessing complete.")

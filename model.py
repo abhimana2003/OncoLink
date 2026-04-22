@@ -15,6 +15,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import train_test_split
+import joblib
 
 
 INPUT_DIR = "outputs_metabric"
@@ -110,12 +111,9 @@ def evaluate_model(
 
 
 def run_experiments() -> pd.DataFrame:
-    """
-    Run experiments on METABRIC feature sets.
-    """
     X_all, X_top, X_pca_20, X_clinical, y = load_data()
 
-    feature_sets: List[Tuple[str, pd.DataFrame]] = [
+    feature_sets = [
         ("Clinical Only", X_clinical),
         ("Top Features", X_top),
         ("PCA 20", X_pca_20),
@@ -127,7 +125,11 @@ def run_experiments() -> pd.DataFrame:
         ("Random Forest", RandomForestClassifier(n_estimators=100, random_state=42)),
     ]
 
-    results: List[Dict[str, float]] = []
+    results = []
+
+    best_model = None
+    best_score = -1
+    best_metadata = {}
 
     for feature_name, X in feature_sets:
         X_train, X_test, y_train, y_test = make_split(X, y)
@@ -142,17 +144,31 @@ def run_experiments() -> pd.DataFrame:
                 model_name=model_name,
                 feature_name=feature_name,
             )
+
             results.append(result)
 
-    results_df = pd.DataFrame(results)
-    results_df = results_df.sort_values(by="ROC_AUC", ascending=False).reset_index(drop=True)
+            if result["ROC_AUC"] > best_score:
+                best_score = result["ROC_AUC"]
+                best_model = model
+                best_metadata = {
+                    "model_name": model_name,
+                    "feature_name": feature_name,
+                }
 
-    results_path = os.path.join(RESULTS_DIR, "model_comparison.csv")
-    results_df.to_csv(results_path, index=False)
+    results_df = pd.DataFrame(results).sort_values(by="ROC_AUC", ascending=False)
 
-    print("\nSaved results to:", results_path)
-    print("\nFinal comparison table:")
-    print(results_df)
+    
+    model_path = os.path.join(RESULTS_DIR, "best_model.pkl")
+    joblib.dump(best_model, model_path)
+
+    metadata_path = os.path.join(RESULTS_DIR, "best_model_info.txt")
+    with open(metadata_path, "w") as f:
+        f.write(str(best_metadata))
+
+    print("\nBest model saved:")
+    print(best_metadata)
+
+    results_df.to_csv(os.path.join(RESULTS_DIR, "model_comparison.csv"), index=False)
 
     return results_df
 
