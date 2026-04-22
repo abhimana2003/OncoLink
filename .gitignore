@@ -1,0 +1,3 @@
+# Ignore GEO dataset files
+data/GSE25066_series_matrix.txt
+data/GSE25066_series_matrix.txt.gz
