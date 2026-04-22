@@ -1,3 +1,17 @@
-# Ignore GEO dataset files
-data/GSE25066_series_matrix.txt
-data/GSE25066_series_matrix.txt.gz
+# Ignore large datasets
+data/*.txt
+data/*.gz
+data/*.csv  # only if raw, NOT your processed outputs
+
+# Python stuff
+.venv/
+__pycache__/
+*.pyc
+
+# Models / heavy files
+*.pkl
+
+# OS junk
+.DS_Store
+
+!data/METABRIC_cleaned.csv
