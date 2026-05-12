@@ -1,16 +1,19 @@
+import os
+import tempfile
+os.environ.setdefault("MPLCONFIGDIR",os.path.join(tempfile.gettempdir(), "oncolink-matplotlib"))
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
-import os
 import joblib
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 DATA_PATH = "data/METABRIC_RNA_Mutation.csv"
 OUTPUT_DIR = "outputs_metabric"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 
 
 def clean_column_names(df):
@@ -34,14 +37,12 @@ def map_binary(series, pos_vals, neg_vals):
         if x in neg_vals:
             return 0
         return np.nan
-
     return series.map(convert)
-
 
 
 print("\n DATA INSPECTION ")
 
-df = pd.read_csv(DATA_PATH)
+df = pd.read_csv(DATA_PATH, low_memory=False)
 df = clean_column_names(df)
 
 print("Raw Shape:", df.shape)
@@ -75,7 +76,6 @@ clinical_candidates = [
 
 clinical_cols = [c for c in clinical_candidates if c in df.columns]
 
-# Convert binary clinical features
 for col in ["chemotherapy", "hormone_therapy", "radio_therapy"]:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -87,7 +87,6 @@ for col in ["er_status", "her2_status", "pr_status"]:
             ["negative", "neg", "0"]
         )
 
-# Ensure numeric
 for col in clinical_cols:
     df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -109,7 +108,6 @@ gene_cols = [
     and c not in mutation_cols
 ]
 
-# Force numeric
 for col in gene_cols:
     df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -129,7 +127,6 @@ df = df[keep_cols]
 clinical_cols = [c for c in clinical_cols if c in df.columns]
 gene_cols = [c for c in gene_cols if c in df.columns]
 
-# Fill missing values
 df[clinical_cols] = df[clinical_cols].fillna(df[clinical_cols].mean())
 df[gene_cols] = df[gene_cols].fillna(df[gene_cols].mean())
 
@@ -163,7 +160,6 @@ X_all_scaled = np.concatenate([X_genes_scaled, X_clinical_scaled], axis=1)
 
 print("\n FEATURE ENGINEERING ")
 
-# Top variable genes
 num_top = min(1000, X_genes.shape[1])
 variances = np.var(X_genes_scaled, axis=0)
 top_idx = np.argsort(variances)[-num_top:]
@@ -171,10 +167,8 @@ top_idx = np.argsort(variances)[-num_top:]
 X_top_genes = X_genes_scaled[:, top_idx]
 X_top = np.concatenate([X_top_genes, X_clinical_scaled], axis=1)
 
-# Clinical only
 X_clinical_only = X_clinical_scaled
 
-# PCA
 pca_20 = PCA(n_components=20, random_state=42)
 pca_50 = PCA(n_components=50, random_state=42)
 pca_var = PCA(n_components=0.95, random_state=42)
@@ -189,16 +183,21 @@ print("PCA 95% Components:", pca_var.n_components_)
 
 
 print("\n SAVING OUTPUTS ")
+# Save gene column names for downstream use
+pd.Series(gene_cols).to_csv(f"{OUTPUT_DIR}/gene_column_names.csv", index=False, header=["gene_name"])
+pd.Series(clinical_cols).to_csv(f"{OUTPUT_DIR}/clinical_column_names.csv", index=False, header=["clinical_name"])
+pd.Series([str(i) for i in top_idx]).to_csv(f"{OUTPUT_DIR}/top_gene_indices.csv", index=False, header=["index"])
 
-pd.DataFrame(X_all_scaled).to_csv(f"{OUTPUT_DIR}/X_all_genes.csv", index=False)
+pd.DataFrame(X_all_scaled, columns=list(gene_cols) + list(clinical_cols)).to_csv(f"{OUTPUT_DIR}/X_all_genes.csv", index=False)
 pd.DataFrame(X_top).to_csv(f"{OUTPUT_DIR}/X_top_variable_genes.csv", index=False)
 pd.DataFrame(X_pca_20).to_csv(f"{OUTPUT_DIR}/X_pca_20.csv", index=False)
 pd.DataFrame(X_pca_50).to_csv(f"{OUTPUT_DIR}/X_pca_50.csv", index=False)
 pd.DataFrame(X_pca_var).to_csv(f"{OUTPUT_DIR}/X_pca_95_var.csv", index=False)
-pd.DataFrame(X_clinical_only).to_csv(f"{OUTPUT_DIR}/X_clinical.csv", index=False)
+pd.DataFrame(X_clinical_scaled, columns=clinical_cols).to_csv(f"{OUTPUT_DIR}/X_clinical.csv", index=False)
 y.to_csv(f"{OUTPUT_DIR}/y_labels.csv", index=False)
 
-# Save models
+df[gene_cols + clinical_cols + [target_col]].to_csv(f"{OUTPUT_DIR}/raw_features_unscaled.csv", index=False)
+
 joblib.dump(scaler_genes, f"{OUTPUT_DIR}/scaler_genes.pkl")
 joblib.dump(scaler_clinical, f"{OUTPUT_DIR}/scaler_clinical.pkl")
 joblib.dump(pca_20, f"{OUTPUT_DIR}/pca_20.pkl")
@@ -209,23 +208,29 @@ joblib.dump(pca_var, f"{OUTPUT_DIR}/pca_95_var.pkl")
 print("\n SUMMARY ")
 
 summary = {
-    "Samples": len(y),
-    "Gene Features": X_genes.shape[1],
-    "Clinical Features": X_clinical.shape[1],
-    "Total Features": X_all.shape[1],
+    "Total Samples": len(y),
+    "Number of Gene Features": X_genes.shape[1],
+    "Number of Clinical Features": X_clinical.shape[1],
+    "Total Combined Features": X_all.shape[1],
+    "Responders (label=1)": int((y == 1).sum()),
+    "Non-Responders (label=0)": int((y == 0).sum()),
+    "PCA 95pct Components": int(pca_var.n_components_),
 }
 
 for k, v in summary.items():
     print(f"{k}: {v}")
 
-# Class distribution
+
+with open(f"{OUTPUT_DIR}/dataset_summary.txt", "w") as f:
+    for k, v in summary.items():
+        f.write(f"{k}: {v}\n")
+
 plt.figure()
 y.value_counts().plot(kind="bar")
 plt.title("Class Distribution")
 plt.savefig(f"{OUTPUT_DIR}/class_distribution.png")
 plt.close()
 
-# PCA variance
 plt.figure()
 plt.plot(np.cumsum(pca_var.explained_variance_ratio_))
 plt.title("PCA Explained Variance")

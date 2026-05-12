@@ -1,17 +1,34 @@
-# Ignore large datasets
-data/*.txt
-data/*.gz
-data/*.csv  # only if raw, NOT your processed outputs
-
-# Python stuff
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.so
+.venv/
+venv/
+env/
 
-# Models / heavy files
+# Data & models (large files — do not commit)
+data/
+outputs/
+outputs_metabric/
 *.pkl
+*.npy
+*.csv
+*.png
 
-# OS junk
+# Environment
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
 .DS_Store
+Thumbs.db
 
-!data/METABRIC_cleaned.csv
+# Streamlit
+.streamlit/

@@ -1,144 +1,284 @@
+
+import os
+import json
+import time
+from typing import Any
+
 import pandas as pd
-import subprocess
-import numpy as np
-import joblib
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
+
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+
+GROQ_TIMEOUT = int(os.getenv("GROQ_TIMEOUT_SECONDS", "120"))
+GROQ_TEMPERATURE = float(os.getenv("GROQ_TEMPERATURE", "0.2"))
+
+GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "700"))
 
 RESULTS_PATH = "outputs_metabric/model_results/model_comparison.csv"
-DATA_PATH = "outputs_metabric/X_all_genes.csv"
-LABEL_PATH = "outputs_metabric/y_labels.csv"
 
-
-def load_results():
-    return pd.read_csv(RESULTS_PATH)
-
-
-def load_data():
-    X = pd.read_csv(DATA_PATH)
-    y = pd.read_csv(LABEL_PATH).iloc[:, 0]
-    return X, y
+MAX_RETRIES = 3
+BACKOFF_SECONDS = 3
 
 
 
-def query_ollama(prompt: str, model: str = "llama3"):
-    result = subprocess.run(
-        ["ollama", "run", model],
-        input=prompt.encode(),
-        stdout=subprocess.PIPE
+def _get_client() :
+    if not GROQ_API_KEY or GROQ_API_KEY == "your_groq_key_here":
+        return None
+    return OpenAI(
+        api_key=GROQ_API_KEY,
+        base_url=GROQ_BASE_URL,
+        timeout=GROQ_TIMEOUT,
     )
-    return result.stdout.decode()
 
 
-def explain_model_results(question: str):
-    results_df = load_results()
-    table_str = results_df.to_string(index=False)
-
-    prompt = f"""
-        You are an AI clinical data scientist working on predicting breast cancer treatment response.
-
-        The goal of the project is:
-        Predict whether a patient will respond to treatment using gene expression and clinical features.
-
-        Here are model evaluation results:
-
-        {table_str}
-
-        Answer the following question:
-        {question}
-
-        Focus on:
-        - Which model is best for predicting treatment response
-        - Whether gene features or clinical features matter more
-        - Practical implications for patient prediction
-        """
-
-    response = query_ollama(prompt)
-
-    print("\n=== MODEL INSIGHT ===\n")
-    print(response)
+def is_groq_available() :
+    return bool(GROQ_API_KEY and GROQ_API_KEY != "your_groq_key_here")
 
 
-def explain_patient(index: int):
-    import os
-
-    # Load data
-    X = pd.read_csv("outputs_metabric/X_all_genes.csv")
-    y = pd.read_csv("outputs_metabric/y_labels.csv").iloc[:, 0]
-
-    # Load trained model
-    model_path = "outputs_metabric/model_results/best_model.pkl"
-
-    if not os.path.exists(model_path):
-        print("ERROR: Run model.py first to generate trained model.")
-        return
-
-    model = joblib.load(model_path)
-
-    # Select patient
-    patient_features = X.iloc[[index]]  # keep as DataFrame
-    true_label = y.iloc[index]
-
-    # Predict
-    pred = model.predict(patient_features)[0]
-    prob = model.predict_proba(patient_features)[0][1]
-
-    # Prepare small summary for LLM
-    feature_preview = patient_features.iloc[0].values[:20]
-
-    prompt = f"""
-        You are an AI clinical assistant helping interpret a machine learning prediction.
-
-        Goal:
-        Predict treatment response (1 = responder, 0 = non-responder).
-
-        Prediction for this patient:
-        - Predicted label: {pred}
-        - Probability of response: {prob:.3f}
-        - True label: {true_label}
-
-        Sample of patient features:
-        {feature_preview}
-
-        Explain:
-        1. What the prediction means
-        2. Why the model might have made this prediction
-        3. Role of gene vs clinical features
-        4. Confidence and uncertainty
-        5. Whether this prediction should influence treatment decisions
-        """
-
-    response = query_ollama(prompt)
-
-    print(f"\n PATIENT {index} (REAL MODEL PREDICTION) \n")
-    print(response)
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_similar_patients",
+            "description": "Retrieve similar past patients and outcomes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "patient_index": {"type": "integer"},
+                    "k": {"type": "integer", "default": 5},
+                },
+                "required": ["patient_index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_model_performance",
+            "description": "Retrieve model performance table.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
 
 
-def treatment_decision_support():
-    results_df = load_results()
-
-    best_model = results_df.iloc[0]
-
-    prompt = f"""
-        You are assisting in a clinical decision-support system.
-
-        Best model result:
-        {best_model.to_dict()}
-
-        Answer:
-        - Should this model be trusted for predicting treatment response?
-        - What are its strengths?
-        - What are its risks in a real clinical setting?
-        - What additional data would improve predictions?
-
-        Keep it realistic and grounded.
-        """
-
-    response = query_ollama(prompt)
-
-    print("\n DECISION SUPPORT \n")
-    print(response)
+def _execute_tool(name, args) :
+    if name == "get_similar_patients":
+        return _tool_similar_patients(args.get("patient_index", 0), args.get("k", 5))
+    elif name == "get_model_performance":
+        return _tool_model_performance()
+    return "Unknown tool"
 
 
+def _tool_similar_patients(patient_index, k = 5) :
+    try:
+        from similarity_engine import get_engine
+        engine = get_engine()
+        summary = engine.get_similar_outcomes_summary(patient_index, k=k)
+
+        if summary["total"] == 0:
+            return "Similarity index not built."
+
+        patients = summary.get("patients", [])[:3]
+
+        lines = [
+            f"Similar patients: {summary['total']}",
+            f"Responders: {summary['responders']}",
+            f"Non-Responders: {summary['non_responders']}",
+        ]
+
+        for p in patients:
+            lines.append(
+                f"Patient {p['index']} — {p['outcome_label']} "
+                f"(similarity {p['similarity_pct']}%)"
+            )
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def _tool_model_performance() :
+    try:
+        df = pd.read_csv(RESULTS_PATH)
+        df = df.head(5).round(3)
+
+        return df.to_string(index=False)
+
+    except Exception as e:
+        return f"Error: {e}"
+
+def _trim_messages(messages, max_chars=8000):
+    """Prevent huge context windows"""
+    total = 0
+    trimmed = []
+
+    for m in reversed(messages):
+        content = m.get("content", "")
+        total += len(content)
+
+        if total > max_chars:
+            break
+
+        trimmed.append(m)
+
+    return list(reversed(trimmed))
+
+
+
+def run_agent(user_prompt, system_prompt = None, max_turns = 4) :
+    client = _get_client()
+    if client is None:
+        return _static_fallback()
+
+    if system_prompt is None:
+        system_prompt = (
+            "You are an oncology AI assistant. Be concise, clinical, and precise. "
+            "Use tools when helpful. Limit responses to under 150 words."
+        )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt[:2000]},  # 🔥 truncate prompt
+    ]
+
+    for _ in range(max_turns):
+
+        messages = _trim_messages(messages)
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    temperature=GROQ_TEMPERATURE,
+                    max_tokens=GROQ_MAX_TOKENS,
+                )
+                break
+
+            except Exception as e:
+                if "rate_limit" in str(e).lower() and attempt < MAX_RETRIES - 1:
+                    wait = BACKOFF_SECONDS * (attempt + 1)
+                    print(f"Rate limit hit. Retrying in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    return f"Groq API error: {e}"
+
+        msg = response.choices[0].message
+
+        if not msg.tool_calls:
+            return msg.content or ""
+
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    },
+                }
+                for tc in msg.tool_calls
+            ],
+        })
+
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments)
+            except:
+                args = {}
+
+            result = _execute_tool(tc.function.name, args)
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result[:1500],  # 🔥 trim tool output
+            })
+
+    return "No response generated."
+
+
+def run_direct(user_prompt, system_prompt = None) :
+    client = _get_client()
+    if client is None:
+        return _static_fallback()
+
+    if system_prompt is None:
+        system_prompt = (
+            "You are an oncology AI assistant. Be concise, clinical, and precise. "
+            "Use only the evidence provided in the prompt. Do not invent patient outcomes."
+        )
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt[:6000]},
+                ],
+                temperature=GROQ_TEMPERATURE,
+                max_tokens=GROQ_MAX_TOKENS,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            if "rate_limit" in str(e).lower() and attempt < MAX_RETRIES - 1:
+                wait = BACKOFF_SECONDS * (attempt + 1)
+                print(f"Rate limit hit. Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                return f"Groq API error: {e}"
+
+    return "No response generated."
+
+
+def explain_prediction(prediction_result,patient_profile,retrieval_context = None,) :
+    context_text = ""
+    if retrieval_context:
+        context_text = f"\nRetrieved evidence:\n{json.dumps(retrieval_context, indent=2, default=str)}\n"
+
+    prompt = (
+        f"Patient:\n{patient_profile}\n\n"
+        f"Prediction: {prediction_result}\n\n"
+        f"{context_text}\n"
+        "Explain clinical meaning, similar patients, model-performance context, and limitations. "
+        "Use only the retrieved evidence provided; do not invent patient outcomes. "
+        "Keep the explanation under 180 words."
+    )
+    if retrieval_context:
+        return run_direct(prompt)
+    return run_agent(prompt)
+
+
+def generate_decision_support(prediction_result, model_info) :
+    prompt = (
+        f"Prediction: {prediction_result}\n"
+        f"Model: {model_info}\n\n"
+        "Give clinical guidance in under 120 words."
+    )
+    return run_agent(prompt)
+
+
+def explain_model_results(question) :
+    return run_agent(f"Answer this clinical ML question: {question}")
+
+def _static_fallback() :
+    return (
+        "AI assistant unavailable (Groq not configured or rate limited).\n"
+        "Use model outputs directly."
+    )
 if __name__ == "__main__":
-    explain_model_results("Which feature type is most useful for predicting treatment response?")
-    explain_patient(index=5)
-    treatment_decision_support()
+    print("Groq available:", is_groq_available())

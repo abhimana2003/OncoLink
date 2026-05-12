@@ -1,6 +1,7 @@
 Total Samples: 1904
-Number of Gene Features: 491
+Number of Gene Features: 492
 Number of Clinical Features: 10
-Number of Combined Features: 501
-Positive Class Count: 801
-Negative Class Count: 1103
+Total Combined Features: 502
+Responders (label=1): 801
+Non-Responders (label=0): 1103
+PCA 95pct Components: 325

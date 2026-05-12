@@ -1,7 +1,15 @@
 pandas
 numpy
-scikit-learn
+scikit-learn>=1.4,<1.6
 matplotlib
 jupyter
 ipykernel
 joblib
+streamlit>=1.30.0
+faiss-cpu
+shap
+xgboost
+scikit-survival
+openai>=1.0.0
+python-dotenv
+scipy
