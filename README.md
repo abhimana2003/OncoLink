@@ -1,6 +1,12 @@
 # OncoLink - Precision Medicine Platform
 The goal of OncoLink is to support precision medicine by helping oncologists predict a patient’s response to a treatment plan and make more informed clinical decisions. OncoLink can predict, with probability/confidence, whether a patient will respond to treatment, show the top k most similar historical patients from the METABRIC dataset, allow physicians to enter outcomes for patients so we can improve the model, and let them see insights into how the model makes predictions.
 
+## Genomics 2 Group (202605-3)
+
+- Anjali Bhimanadham — apb2192
+- Mahsa Mohajeri — mm6859
+- Daniyah Taimur — drt2145
+
 ## Project Structure
 
 ```text
